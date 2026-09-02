@@ -1,6 +1,8 @@
 import Slot from '../src/slot.js';
 
-const S = new Slot();
+const S = new Slot({
+    root: import.meta.dirname,
+});
 
-const log = await S.fill('test/playground.txt');
-console.log(log);
+const fill = await S.fill('index.html');
+const log = await S.save(fill, 'output.html');
