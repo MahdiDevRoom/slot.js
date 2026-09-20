@@ -6,27 +6,38 @@
  * @see https://github.com/mahdidevroom/slot.js
 */
 
+/* --------------------------------------------
+    Export
+-------------------------------------------- */
 export default class {
     //--- Constructor -------------------------
     constructor(config = {}) {
         this.version = '1.0.0';
-        Object.assign(this.#CONFIG, config);
+        this.#init(config);
     }
 
     //--- Private Values -----------------------
     #LOGS = [];
     #LOGLEVEL = 1;
-    #CONFIG = {
+    #DEFAULT_CONFIG = {
         slot: '${TAG}',
         dynamic: '$(TAG)',
         block: '-$-BLOCK-$-',
+        error: '[!ERROR!]',
         root: null,
         separator: ':',
         maxDeep: 20
     }
-    
-    #ENCODINGS = ['utf8', 'utf-8', 'base64', 'base64url', 'hex', 'ascii', 'binary'];
-
+    #CONFIG = { ...this.#DEFAULT_CONFIG }
+    #ENCODINGS = [
+        'utf8',
+        'utf-8',
+        'base64',
+        'base64url',
+        'hex',
+        'ascii',
+        'binary'
+    ];
     #MIME = {
         'png': 'image/png',
         'jpg': 'image/jpeg',
@@ -53,28 +64,48 @@ export default class {
         'zip': 'application/zip',
         'pdf': 'application/pdf',
     }
-
     get #REGEXP() {
         const es = (str) => str.replace(/[\\^$.|?*+()\[\]{}]/g, '\\$&');
 
         const slot = this.#CONFIG.slot.split('TAG').map(es).join('(?<content>.*?)');
         const dynamic = this.#CONFIG.dynamic.split('TAG').map(es).join('(?<content>.*?)');
         const block = this.#CONFIG.block.split('BLOCK').map(es).join('(?<content>.*?)');
+        const error = es(this.#CONFIG.error);
 
         return {
             slot: new RegExp(slot, 'g'),
             dynamic: new RegExp(dynamic, 'g'),
             block: new RegExp(block, 'gs'),
+            error: new RegExp(error, 'g'),
             typeAndArg: new RegExp('^(\\w+)\\([\'\"](.*?)[\'\"]\\)'),
             chainMethod: new RegExp('\\.(\\w+)\\([\'\"]?(.*?)[\'\"]?\\)', 'g'),
         }
     }
-
-    #VALIDTHIN = {
+    #VALIDATION = {
         isServer: () => typeof process !== 'undefined' && process.versions != null && process.versions.node != null,
         isClient: () => typeof window !== 'undefined' && typeof document !== 'undefined',
+        encoding: (input) => this.#ENCODINGS.includes(input),
+        isBinaryExtension: (ext) => {
+            const binaryTypes = [
+                'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'svg',
+                'mp4', 'webm', 'mp3', 'wav',
+                'pdf', 'zip', 'rar', '7z',
+                'woff', 'woff2', 'ttf', 'otf',
+                'exe', 'dll', 'bin'
+            ];
+            return binaryTypes.includes(ext);
+        },
+        isConfigKey: (key) => Object.keys(this.#DEFAULT_CONFIG).includes(key),
+        isConfigValue: (key, value) => {
+            if (key === 'root') return value === null || typeof value === 'string';
+            if (key === 'separator') return typeof value === 'string' && value.length > 0;
+            if (key === 'maxDeep') return typeof value === 'number' && value > 0;
+            if (key === 'slot' || key === 'dynamic' || key === 'block' || key === 'error') {
+                return typeof value === 'string' && value.length > 0;
+            }
+            return false;
+        },
     }
-
     #MESSAGES = {
         E01: (val) => `Slot Error [SlotBlock]: invalid expression "${val}" - must start with "file()" or "text()"`,
         E02: (val) => `Slot Error [SlotBlock]: invalid function "${val}" - only "file" and "text" are allowed`,
@@ -87,6 +118,9 @@ export default class {
         E09: (val) => `Slot Error [LogLevel]: invalid log level "${val}"`,
         E10: (val) => `Slot Error [Save]: failed to save file "${val}"`,
         E11: (val) => `Slot Error [Save]: invalid input for save - expected string, buffer or blob`,
+        E12: (val) => `Slot Error [Config]: unknown config key "${val}"`,
+        E13: (val) => `Slot Error [Config]: invalid value for "${val}"`,
+        E14: (val) => `Slot Error [Config]: duplicate syntax detected - "${val}" syntaxes must be unique`,
     }
 
     //--- Private Methods ----------------------
@@ -97,15 +131,44 @@ export default class {
         if (this.#LOGLEVEL === 2) throw new Error(message);
         if (this.#LOGLEVEL === 3) {
             console.error(message);
-            if (this.#VALIDTHIN.isServer()) {
+            if (this.#VALIDATION.isServer()) {
                 process.exit(1);
             }
         }
     }
+    #init(config) {
+        for (const [key, value] of Object.entries(config)) {
+            if (!this.#VALIDATION.isConfigKey(key)) {
+                this.#log('E12', key);
+                continue;
+            }
+            if (!this.#VALIDATION.isConfigValue(key, value)) {
+                this.#log('E13', key);
+                continue;
+            }
+            this.#CONFIG[key] = value;
+        }
 
+        const syntaxes = [
+            { name: 'slot', value: this.#CONFIG.slot },
+            { name: 'dynamic', value: this.#CONFIG.dynamic },
+            { name: 'block', value: this.#CONFIG.block },
+        ];
+
+        for (let i = 0; i < syntaxes.length; i++) {
+            for (let j = i + 1; j < syntaxes.length; j++) {
+                if (syntaxes[i].value === syntaxes[j].value) {
+                    this.#log('E14', syntaxes[i].name);
+                }
+            }
+        }
+    }
+    #error(code, input) {
+        return `${this.#CONFIG.error} ${this.#MESSAGES[code]?.(input) || input} ${this.#CONFIG.error}`;
+    }
     async #fetch(path, asBinary = false) {
         try {
-            if (this.#VALIDTHIN.isClient()) {
+            if (this.#VALIDATION.isClient()) {
                 const res = await fetch(path);
                 if (!res.ok) {
                     this.#log('E06', path);
@@ -123,7 +186,7 @@ export default class {
                 return res.text();
             }
 
-            if (this.#VALIDTHIN.isServer()) {
+            if (this.#VALIDATION.isServer()) {
                 const fs = await import('fs');
                 const { join } = await import('path');
                 const fullPath = this.#CONFIG.root ? join(this.#CONFIG.root, path) : path;
@@ -132,15 +195,7 @@ export default class {
                     const buffer = await fs.promises.readFile(fullPath);
                     if (asBinary) {
                         const ext = path.split('.').pop().toLowerCase();
-                        const mimeTypes = {
-                            'png': 'image/png',
-                            'jpg': 'image/jpeg',
-                            'jpeg': 'image/jpeg',
-                            'gif': 'image/gif',
-                            'webp': 'image/webp',
-                            'svg': 'image/svg+xml',
-                        };
-                        const mime = mimeTypes[ext] || 'application/octet-stream';
+                        const mime = this.#MIME[ext] || 'application/octet-stream';
                         return `data:${mime};base64,${buffer.toString('base64')}`;
                     }
                     return buffer.toString('utf8');
@@ -154,7 +209,6 @@ export default class {
             return null;
         }
     }
-
     #getIndent(text, position) {
         const before = text.substring(0, position);
         const lines = before.split('\n');
@@ -162,7 +216,6 @@ export default class {
         const indent = lastLine.match(/^\s*/)[0];
         return indent;
     }
-
     #applyIndent(content, indent) {
         const lines = content.split('\n');
         return lines.map((line, index) => {
@@ -170,7 +223,6 @@ export default class {
             return indent + line;
         }).join('\n');
     }
-
     #parseExpression(expr) {
         const result = {
             type: null,
@@ -212,7 +264,6 @@ export default class {
 
         return result;
     }
-
     #parseSlotBlock(content) {
         const result = {};
         const [key, ...parts] = content.split(this.#CONFIG.separator).map(s => s.trim());
@@ -229,7 +280,6 @@ export default class {
 
         return result;
     }
-
     #processBlocks(text) {
         let result = text;
         const matches = [...text.matchAll(this.#REGEXP.block)];
@@ -241,14 +291,11 @@ export default class {
             const parsed = this.#parseSlotBlock(content);
 
             Object.assign(variables, parsed);
-
-            // حذف دقیق فقط همان رشته‌ی بلاک
-            result = result.replace(fullMatch, '');
+            result = result.split('\n').filter(line => !line.includes(fullMatch)).join('\n');
         }
 
         return { result, variables };
     }
-
     async #processDynamic(text) {
         const matches = text.matchAll(this.#REGEXP.dynamic);
         let result = text;
@@ -258,11 +305,13 @@ export default class {
             const index = match.index;
             const content = match.groups.content;
 
-            const value = await this.#fetch(content);
+            const ext = content.split('.').pop().toLowerCase();
+            const asBinary = this.#VALIDATION.isBinaryExtension(ext);
+
+            const value = await this.#fetch(content, asBinary);
 
             if (value === null) {
-                const errorMsg = this.#MESSAGES.E06(content);
-                result = result.replace(fullMatch, errorMsg);
+                result = result.replace(fullMatch, this.#error('E06', content));
                 continue;
             }
 
@@ -274,18 +323,83 @@ export default class {
 
         return result;
     }
+    async #processSlots(text, variables) {
+        const matches = text.matchAll(this.#REGEXP.slot);
+        let result = text;
 
-    #validateEncoding(encoding) {
-        return this.#ENCODINGS.includes(encoding);
+        for (const match of matches) {
+            const fullMatch = match[0];
+            const index = match.index;
+            const content = match.groups.content;
+            const variable = variables[content];
+
+            if (!variable) {
+                result = result.replace(fullMatch, this.#error('E04', content));
+                continue;
+            }
+
+            let value;
+            if (variable.type === 'file') {
+                const ext = variable.arg.split('.').pop().toLowerCase();
+                const isBinaryExt = this.#VALIDATION.isBinaryExtension(ext);
+
+                const isBinary = isBinaryExt ||
+                    variable.encode === 'base64' ||
+                    variable.encode === 'base64url' ||
+                    variable.decode === 'base64' ||
+                    variable.decode === 'base64url';
+
+                value = await this.#fetch(variable.arg, isBinary);
+
+                if (value === null) {
+                    result = result.replace(fullMatch, this.#error('E06', variable.arg));
+                    continue;
+                }
+
+                if (isBinary && typeof value === 'string' && value.startsWith('data:')) {
+                    value = value.split(',')[1];
+
+                    if (!variable.encode && !variable.decode) {
+                        variable.encode = 'base64';
+                    }
+                }
+            } else if (variable.type === 'text') {
+                value = variable.arg;
+            } else {
+                continue;
+            }
+
+            if (variable.decode) {
+                if (!this.#VALIDATION.encoding(variable.decode)) {
+                    result = result.replace(fullMatch, this.#error('E05', variable.decode));
+                    continue;
+                }
+                value = this.#decode(value, variable.decode);
+            }
+
+            if (variable.encode) {
+                if (!this.#VALIDATION.encoding(variable.encode)) {
+                    result = result.replace(fullMatch, this.#error('E05', variable.encode));
+                    continue;
+                }
+                value = this.#encode(value, variable.encode);
+            }
+
+            const indent = this.#getIndent(result, index);
+            const indentedValue = this.#applyIndent(value, indent);
+
+            result = result.replace(fullMatch, indentedValue);
+        }
+
+        return result;
     }
-
     #encode(content, encoding) {
         const enc = encoding || 'utf8';
-        
-        if (this.#VALIDTHIN.isServer()) {
+
+        if (this.#VALIDATION.isServer()) {
             return Buffer.from(content, 'utf8').toString(enc);
         }
-        
+
         switch (enc) {
             case 'base64': {
                 const bytes = new TextEncoder().encode(content);
@@ -318,14 +432,13 @@ export default class {
                 return content;
         }
     }
-
     #decode(content, encoding) {
         const enc = encoding || 'utf8';
-        
-        if (this.#VALIDTHIN.isServer()) {
+
+        if (this.#VALIDATION.isServer()) {
             return Buffer.from(content, enc).toString('utf8');
         }
-        
+
         switch (enc) {
             case 'base64': {
                 const binaryString = atob(content);
@@ -359,78 +472,28 @@ export default class {
                 return content;
         }
     }
+    async #render(text, depth = 0) {
+        if (depth > this.#CONFIG.maxDeep) {
+            this.#log('E08', this.#CONFIG.maxDeep);
+            return text;
+        }
 
-    async #processSlots(text, variables) {
-        const matches = text.matchAll(this.#REGEXP.slot);
-        let result = text;
+        let result = await this.#processDynamic(text);
 
-        for (const match of matches) {
-            const fullMatch = match[0];
-            const index = match.index;
-            const content = match.groups.content;
-            const variable = variables[content];
+        const blocks = this.#processBlocks(result);
+        result = blocks.result;
 
-            if (!variable) {
-                result = result.replace(fullMatch, this.#MESSAGES.E04(content));
-                continue;
-            }
+        result = await this.#processSlots(result, blocks.variables);
 
-            let value;
-            if (variable.type === 'file') {
-                const isBinary = variable.encode === 'base64' || 
-                                 variable.encode === 'base64url' ||
-                                 variable.decode === 'base64' || 
-                                 variable.decode === 'base64url';
-                value = await this.#fetch(variable.arg, isBinary);
-                
-                if (value === null) {
-                    result = result.replace(fullMatch, this.#MESSAGES.E06(variable.arg));
-                    continue;
-                }
+        const cleanResult = result.replace(this.#REGEXP.error, '');
+        const hasDynamic = this.#REGEXP.dynamic.test(cleanResult);
+        const hasSlot = this.#REGEXP.slot.test(cleanResult);
 
-                if (isBinary && typeof value === 'string' && value.startsWith('data:')) {
-                    value = value.split(',')[1];
-                }
-            } else if (variable.type === 'text') {
-                value = variable.arg;
-            } else {
-                continue;
-            }
-
-            if (variable.decode) {
-                if (!this.#validateEncoding(variable.decode)) {
-                    result = result.replace(fullMatch, this.#MESSAGES.E05(variable.decode));
-                    continue;
-                }
-                value = this.#decode(value, variable.decode);
-            }
-
-            if (variable.encode) {
-                if (!this.#validateEncoding(variable.encode)) {
-                    result = result.replace(fullMatch, this.#MESSAGES.E05(variable.encode));
-                    continue;
-                }
-                value = this.#encode(value, variable.encode);
-            }
-
-            const indent = this.#getIndent(result, index);
-            const indentedValue = this.#applyIndent(value, indent);
-
-            result = result.replace(fullMatch, indentedValue);
+        if (hasDynamic || hasSlot) {
+            return this.#render(result, depth + 1);
         }
 
         return result;
-    }
-
-    #isBinaryExtension(ext) {
-        const binaryTypes = [
-            'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'svg',
-            'mp4', 'webm', 'mp3', 'wav',
-            'pdf', 'zip', 'rar', '7z',
-            'woff', 'woff2', 'ttf', 'otf',
-            'exe', 'dll', 'bin'
-        ];
-        return binaryTypes.includes(ext);
     }
 
     //--- Logs Methods ------------------------
@@ -452,48 +515,25 @@ export default class {
     }
 
     //--- Methods -----------------------------
-    async fill(path, depth = 0) {
-        if (depth > this.#CONFIG.maxDeep) {
-            this.#log('E08', this.#CONFIG.maxDeep);
-            return '';
-        }
-
-        // خواندن فایل قالب
+    async fill(path) {
         const text = await this.#fetch(path);
         if (text === null) {
             this.#log('E06', path);
             return '';
         }
-
-        let result = await this.#processDynamic(text);
-        const blocks = this.#processBlocks(result);
-        result = blocks.result;
-        result = await this.#processSlots(result, blocks.variables);
-
-        const hasDynamic = this.#REGEXP.dynamic.test(result);
-        const hasSlot = this.#REGEXP.slot.test(result);
-
-        if (hasDynamic || hasSlot) {
-            return this.fill(path, depth + 1);
-        }
-
-        return result;
+        return this.#render(text);
     }
-
     async save(path, filename = 'output.txt') {
-        // ۱. رندر کردن فایل قالب
         const content = await this.fill(path);
         if (!content) {
             return { success: false, error: `Failed to render: ${path}` };
         }
 
-        // ۲. تشخیص MIME type
         const ext = filename.split('.').pop().toLowerCase();
         const mimeType = this.#MIME[ext] || 'application/octet-stream';
 
-        // ۳. ذخیره در محیط مناسب
         try {
-            if (this.#VALIDTHIN.isClient()) {
+            if (this.#VALIDATION.isClient()) {
                 const blob = new Blob([content], { type: mimeType });
                 const url = URL.createObjectURL(blob);
 
@@ -514,7 +554,7 @@ export default class {
                 };
             }
 
-            if (this.#VALIDTHIN.isServer()) {
+            if (this.#VALIDATION.isServer()) {
                 const fs = await import('fs');
                 const { join } = await import('path');
 
@@ -540,10 +580,8 @@ export default class {
             };
         }
     }
-
     async inject(path, options = {}) {
-        // ۱. بررسی محیط اجرا
-        if (!this.#VALIDTHIN.isClient()) {
+        if (!this.#VALIDATION.isClient()) {
             return {
                 success: false,
                 error: 'Inject method is only available in browser environment.',
@@ -551,7 +589,6 @@ export default class {
             };
         }
 
-        // ۲. رندر کردن فایل قالب
         const content = await this.fill(path);
         if (!content) {
             return { success: false, error: `Failed to render: ${path}` };
@@ -560,7 +597,6 @@ export default class {
         const { type, id = `slot-inject-${Date.now()}` } = options;
 
         try {
-            // ۳. حذف المان قبلی اگر وجود داشته باشد
             const existingElement = document.getElementById(id);
             if (existingElement) {
                 if (existingElement.href && existingElement.href.startsWith('blob:')) {
@@ -569,18 +605,16 @@ export default class {
                 existingElement.remove();
             }
 
-            // ۴. ساخت Blob و Object URL
             const mimeType = type === 'css' ? 'text/css' : 'application/javascript';
             const blob = new Blob([content], { type: mimeType });
             const objectUrl = URL.createObjectURL(blob);
 
-            // ۵. ساخت المان مناسب
-            const element = type === 'css' 
+            const element = type === 'css'
                 ? document.createElement('link')
                 : document.createElement('script');
 
             element.id = id;
-            
+
             if (type === 'css') {
                 element.rel = 'stylesheet';
                 element.href = objectUrl;
@@ -589,10 +623,8 @@ export default class {
                 element.type = 'application/javascript';
             }
 
-            // ۶. تزریق به <head>
             document.head.appendChild(element);
 
-            // ۷. بازگرداندن Promise
             return new Promise((resolve, reject) => {
                 element.onload = () => {
                     resolve({ success: true, id, type, environment: 'client' });
@@ -607,4 +639,4 @@ export default class {
             return { success: false, error: err.message, environment: 'client' };
         }
     }
-}
+} 
