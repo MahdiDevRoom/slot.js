@@ -18,7 +18,6 @@ export default class {
 
     //--- Private Values -----------------------
     #LOGS = [];
-    #LOGLEVEL = 1;
     #DEFAULT_CONFIG = {
         slot: '${TAG}',
         dynamic: '$(TAG)',
@@ -26,7 +25,8 @@ export default class {
         error: '[!ERROR!]',
         root: null,
         separator: ':',
-        maxDeep: 20
+        maxDeep: 20,
+        logLevel: 1,
     }
     #CONFIG = { ...this.#DEFAULT_CONFIG }
     #ENCODINGS = [
@@ -100,6 +100,7 @@ export default class {
             if (key === 'root') return value === null || typeof value === 'string';
             if (key === 'separator') return typeof value === 'string' && value.length > 0;
             if (key === 'maxDeep') return typeof value === 'number' && value > 0;
+            if (key === 'logLevel') return value === 0 || value === 1 || value === 2 || value === 3;
             if (key === 'slot' || key === 'dynamic' || key === 'block' || key === 'error') {
                 return typeof value === 'string' && value.length > 0;
             }
@@ -115,7 +116,7 @@ export default class {
         E06: (val) => `Slot Error [Fetch]: file not found or unable to read "${val}"`,
         E07: (val) => `Slot Error [Fetch]: unexpected error "${val}"`,
         E08: (val) => `Slot Error [SlotDeep]: maximum depth exceeded (${val}) - possible circular reference`,
-        E09: (val) => `Slot Error [LogLevel]: invalid log level "${val}"`,
+        E09: (val) => `Slot Error [LogLevel]: invalid log level "${val}" - must be 0, 1, 2, or 3`,
         E10: (val) => `Slot Error [Save]: failed to save file "${val}"`,
         E11: (val) => `Slot Error [Save]: invalid input for save - expected string, buffer or blob`,
         E12: (val) => `Slot Error [Config]: unknown config key "${val}"`,
@@ -125,11 +126,15 @@ export default class {
 
     //--- Private Methods ----------------------
     #log(code, input) {
-        const message = this.#MESSAGES[code]?.(input) || `Unknown error: ${input}`;
+        let message = this.#MESSAGES[code]?.(input) || `Unknown error: ${input}`;
 
-        if (this.#LOGLEVEL === 1) this.#LOGS.push(message);
-        if (this.#LOGLEVEL === 2) throw new Error(message);
-        if (this.#LOGLEVEL === 3) {
+        if (this.#CONFIG.error) {
+            message = `${this.#CONFIG.error} ${message} ${this.#CONFIG.error}`;
+        }
+
+        if (this.#CONFIG.logLevel === 1) this.#LOGS.push(message);
+        if (this.#CONFIG.logLevel === 2) throw new Error(message);
+        if (this.#CONFIG.logLevel === 3) {
             console.error(message);
             if (this.#VALIDATION.isServer()) {
                 process.exit(1);
@@ -137,6 +142,15 @@ export default class {
         }
     }
     #init(config) {
+        if (config.logLevel !== undefined) {
+            if (this.#VALIDATION.isConfigValue('logLevel', config.logLevel)) {
+                this.#CONFIG.logLevel = config.logLevel;
+            } else {
+                this.#log('E09', config.logLevel);
+            }
+            delete config.logLevel;
+        }
+
         for (const [key, value] of Object.entries(config)) {
             if (!this.#VALIDATION.isConfigKey(key)) {
                 this.#log('E12', key);
@@ -498,14 +512,14 @@ export default class {
 
     //--- Logs Methods ------------------------
     set logLevel(level) {
-        if (level === 1 || level === 2 || level === 3) {
-            this.#LOGLEVEL = level;
+        if (level === 0 || level === 1 || level === 2 || level === 3) {
+            this.#CONFIG.logLevel = level;
         } else {
             this.#log('E09', level);
         }
     }
     get logLevel() {
-        return this.#LOGLEVEL;
+        return this.#CONFIG.logLevel;
     }
     get logs() {
         return [...this.#LOGS];
@@ -519,14 +533,14 @@ export default class {
         const text = await this.#fetch(path);
         if (text === null) {
             this.#log('E06', path);
-            return '';
+            return this.#error('E06', path);
         }
         return this.#render(text);
     }
     async save(path, filename = 'output.txt') {
         const content = await this.fill(path);
         if (!content) {
-            return { success: false, error: `Failed to render: ${path}` };
+            return { success: false, error: this.#error('E06', path) };
         }
 
         const ext = filename.split('.').pop().toLowerCase();
@@ -591,7 +605,7 @@ export default class {
 
         const content = await this.fill(path);
         if (!content) {
-            return { success: false, error: `Failed to render: ${path}` };
+            return { success: false, error: this.#error('E06', path) };
         }
 
         const { type, id = `slot-inject-${Date.now()}` } = options;
@@ -639,4 +653,4 @@ export default class {
             return { success: false, error: err.message, environment: 'client' };
         }
     }
-} 
+}
